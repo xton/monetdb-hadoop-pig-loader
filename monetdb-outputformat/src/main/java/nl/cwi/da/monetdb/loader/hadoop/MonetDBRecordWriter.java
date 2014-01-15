@@ -3,6 +3,7 @@ package nl.cwi.da.monetdb.loader.hadoop;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
+import java.text.NumberFormat;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Map.Entry;
@@ -12,6 +13,7 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.WritableComparable;
 import org.apache.hadoop.mapreduce.RecordWriter;
 import org.apache.hadoop.mapreduce.TaskAttemptContext;
+import org.apache.hadoop.mapreduce.lib.output.FileOutputCommitter;
 import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
 import org.apache.log4j.Logger;
 import org.apache.pig.data.Tuple;
@@ -23,11 +25,13 @@ public class MonetDBRecordWriter extends
 	public static Logger log = Logger.getLogger(MonetDBRecordWriter.class);
 
 	private TaskAttemptContext context;
+    private MonetDBOutputFormat outputFormat;
 
 	private Map<Integer, ValueConverter> converters = new HashMap<Integer, ValueConverter>();
 
-	public MonetDBRecordWriter(TaskAttemptContext context) throws IOException {
+	public MonetDBRecordWriter(TaskAttemptContext context, MonetDBOutputFormat outputFormat) throws IOException {
 		this.context = context;
+        this.outputFormat = outputFormat;
 	}
 
 	public static final String FILE_PREFIX = "col-";
@@ -151,18 +155,24 @@ public class MonetDBRecordWriter extends
 		if (!writersInitialized) {
 			for (int i = 0; i < t.size(); i++) {
 
-				Path outPath = FileOutputFormat.getOutputPath(context);
-				FileSystem fs = outPath.getFileSystem(context
-						.getConfiguration());
+                Path path = new Path(FOLDER_PREFIX + String.format("%08d",context.getTaskAttemptID().getTaskID().getId()) + "/" + FILE_PREFIX + i + FILE_SUFFIX);
+                Path workOutputPath = ((FileOutputCommitter)outputFormat.getOutputCommitter(context)).getWorkPath();
+                Path outputFile = new Path(workOutputPath, path);
+                FileSystem fs = outputFile.getFileSystem(context.getConfiguration());
 
-				Path outputFile = outPath.suffix("/" + FOLDER_PREFIX
-						+ context.getJobID().getId() + "/" + FILE_PREFIX + i
-						+ FILE_SUFFIX);
+//				Path outPath = FileOutputFormat.getOutputPath(context);
+//				FileSystem fs = outPath.getFileSystem(context
+//						.getConfiguration());
+//
+//				Path outputFile = outPath.suffix("/" + FOLDER_PREFIX
+//						+ context.getJobID().getId() + "/" + FILE_PREFIX + i
+//						+ FILE_SUFFIX);
+//
+//				if (fs.exists(outputFile)) {
+//					throw new IOException("Output file '" + outputFile
+//							+ "' already exists.");
+//				}
 
-				if (fs.exists(outputFile)) {
-					throw new IOException("Output file '" + outputFile
-							+ "' already exists.");
-				}
 				OutputStream os = fs.create(outputFile);
 				writers.put(i, os);
 
