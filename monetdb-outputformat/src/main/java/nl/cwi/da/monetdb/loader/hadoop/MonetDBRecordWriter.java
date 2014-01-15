@@ -7,6 +7,7 @@ import java.text.NumberFormat;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Properties;
 
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -16,6 +17,8 @@ import org.apache.hadoop.mapreduce.TaskAttemptContext;
 import org.apache.hadoop.mapreduce.lib.output.FileOutputCommitter;
 import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
 import org.apache.log4j.Logger;
+import org.apache.pig.ResourceSchema;
+import org.apache.pig.data.DataType;
 import org.apache.pig.data.Tuple;
 
 @SuppressWarnings("rawtypes")
@@ -38,8 +41,12 @@ public class MonetDBRecordWriter extends
 	public static final String FOLDER_PREFIX = "part-";
 	public static final String FILE_SUFFIX = ".bulkload";
 
+    private ResourceSchema pigSchema;
+
 	private Map<Integer, OutputStream> writers = new HashMap<Integer, OutputStream>();
 	boolean writersInitialized = false;
+
+    public void setPigSchema(ResourceSchema s){ pigSchema = s; }
 
 	private interface ValueConverter {
 		byte[] convert(Object value);
@@ -65,6 +72,7 @@ public class MonetDBRecordWriter extends
 			return bb.array();
 		}
 	}
+
 
 	private static class ByteValueConverter implements ValueConverter {
 		private ByteBuffer bb = ByteBuffer.allocate(1);
@@ -97,10 +105,10 @@ public class MonetDBRecordWriter extends
 
 		public byte[] convert(Object value) {
 			bb.clear();
-			if (value == null) {
+            if (value == null || !(value instanceof Number)) {
 				value = Integer.MIN_VALUE;
 			}
-			bb.putInt((Integer) value);
+            bb.putInt(((Number) value).intValue());
 			return bb.array();
 		}
 	}
@@ -110,11 +118,11 @@ public class MonetDBRecordWriter extends
 
 		public byte[] convert(Object value) {
 			bb.clear();
-			if (value == null) {
+            if (value == null || !(value instanceof Number)) {
 				value = Long.MIN_VALUE;
 			}
-			bb.putLong((Long) value);
-			return bb.array();
+            bb.putLong(((Number) value).longValue());
+            return bb.array();
 		}
 	}
 
@@ -123,10 +131,11 @@ public class MonetDBRecordWriter extends
 
 		public byte[] convert(Object value) {
 			bb.clear();
-			if (value == null) {
+			if (value == null || !(value instanceof Number)) {
 				value = Float.MIN_VALUE;
 			}
-			bb.putFloat((Float) value);
+            bb.putFloat(((Number) value).floatValue());
+
 			return bb.array();
 		}
 	}
@@ -136,10 +145,10 @@ public class MonetDBRecordWriter extends
 
 		public byte[] convert(Object value) {
 			bb.clear();
-			if (value == null) {
+            if (value == null || !(value instanceof Number)) {
 				value = Double.MIN_VALUE;
 			}
-			bb.putDouble((Double) value);
+            bb.putDouble(((Number) value).doubleValue());
 			return bb.array();
 		}
 	}
@@ -150,73 +159,113 @@ public class MonetDBRecordWriter extends
 		}
 	}
 
-	public void write(WritableComparable key, Tuple t) throws IOException {
+    public void initializeWriters() throws IOException {
+        if (!writersInitialized) {
+            int i = 0;
+            for(ResourceSchema.ResourceFieldSchema s : pigSchema.getFields()){
 
-		if (!writersInitialized) {
-			for (int i = 0; i < t.size(); i++) {
-
+                // One file per column
                 Path path = new Path(FOLDER_PREFIX + String.format("%08d",context.getTaskAttemptID().getTaskID().getId()) + "/" + FILE_PREFIX + i + FILE_SUFFIX);
                 Path workOutputPath = ((FileOutputCommitter)outputFormat.getOutputCommitter(context)).getWorkPath();
                 Path outputFile = new Path(workOutputPath, path);
+
                 FileSystem fs = outputFile.getFileSystem(context.getConfiguration());
+                OutputStream os = fs.create(outputFile);
+                writers.put(i, os);
 
-//				Path outPath = FileOutputFormat.getOutputPath(context);
-//				FileSystem fs = outPath.getFileSystem(context
-//						.getConfiguration());
+                if(s.getType() == DataType.BOOLEAN) {
+                    converters.put(i, new BooleanValueConverter());
+                } else if(s.getType() == DataType.BYTE) {
+                    converters.put(i, new ByteValueConverter());
+                } else if(s.getType() == DataType.INTEGER) {
+                    converters.put(i, new IntegerValueConverter());
+                } else if (s.getType() == DataType.INTEGER) {
+                    converters.put(i, new IntegerValueConverter());
+                } else if (s.getType() == DataType.LONG) {
+                    converters.put(i, new LongValueConverter());
+                } else if (s.getType() == DataType.FLOAT) {
+                    converters.put(i, new FloatValueConverter());
+                } else if (s.getType() == DataType.DOUBLE) {
+                    converters.put(i, new DoubleValueConverter());
+                } else if (s.getType() == DataType.CHARARRAY) {
+                    converters.put(i, new StringValueConverter());
+                } else throw new IOException(
+                            "Unable to fill converter table. Supported values are Java primitive types and Strings!");
+
+                i++;
+            }
+
+            writersInitialized = true;
+        }
+    }
+
+	public void write(WritableComparable key, Tuple t) throws IOException {
+        initializeWriters();
+//		if (!writersInitialized) {
+//			for (int i = 0; i < t.size(); i++) {
 //
-//				Path outputFile = outPath.suffix("/" + FOLDER_PREFIX
-//						+ context.getJobID().getId() + "/" + FILE_PREFIX + i
-//						+ FILE_SUFFIX);
+//                Path path = new Path(FOLDER_PREFIX + String.format("%08d",context.getTaskAttemptID().getTaskID().getId()) + "/" + FILE_PREFIX + i + FILE_SUFFIX);
+//                Path workOutputPath = ((FileOutputCommitter)outputFormat.getOutputCommitter(context)).getWorkPath();
+//                Path outputFile = new Path(workOutputPath, path);
+//                FileSystem fs = outputFile.getFileSystem(context.getConfiguration());
 //
-//				if (fs.exists(outputFile)) {
-//					throw new IOException("Output file '" + outputFile
-//							+ "' already exists.");
+////				Path outPath = FileOutputFormat.getOutputPath(context);
+////				FileSystem fs = outPath.getFileSystem(context
+////						.getConfiguration());
+////
+////				Path outputFile = outPath.suffix("/" + FOLDER_PREFIX
+////						+ context.getJobID().getId() + "/" + FILE_PREFIX + i
+////						+ FILE_SUFFIX);
+////
+////				if (fs.exists(outputFile)) {
+////					throw new IOException("Output file '" + outputFile
+////							+ "' already exists.");
+////				}
+//
+//				OutputStream os = fs.create(outputFile);
+//				writers.put(i, os);
+//
+//				Class valueClass = t.get(i).getClass();
+//				if (valueClass.equals(Boolean.class)) {
+//					converters.put(i, new BooleanValueConverter());
 //				}
-
-				OutputStream os = fs.create(outputFile);
-				writers.put(i, os);
-
-				Class valueClass = t.get(i).getClass();
-				if (valueClass.equals(Boolean.class)) {
-					converters.put(i, new BooleanValueConverter());
-				}
-
-				if (valueClass.equals(Byte.class)) {
-					converters.put(i, new ByteValueConverter());
-				}
-
-				if (valueClass.equals(Short.class)) {
-					converters.put(i, new ShortValueConverter());
-				}
-
-				if (valueClass.equals(Integer.class)) {
-					converters.put(i, new IntegerValueConverter());
-				}
-
-				if (valueClass.equals(Long.class)) {
-					converters.put(i, new LongValueConverter());
-				}
-
-				if (valueClass.equals(Float.class)) {
-					converters.put(i, new FloatValueConverter());
-				}
-
-				if (valueClass.equals(Double.class)) {
-					converters.put(i, new DoubleValueConverter());
-				}
-
-				if (valueClass.equals(String.class)) {
-					converters.put(i, new StringValueConverter());
-				}
-
-				if (!converters.containsKey(i)) {
-					throw new IOException(
-							"Unable to fill converter table. Supported values are Java primitive types and Strings!");
-				}
-
-			}
-			writersInitialized = true;
-		}
+//
+//				if (valueClass.equals(Byte.class)) {
+//					converters.put(i, new ByteValueConverter());
+//				}
+//
+//				if (valueClass.equals(Short.class)) {
+//					converters.put(i, new ShortValueConverter());
+//				}
+//
+//				if (valueClass.equals(Integer.class)) {
+//					converters.put(i, new IntegerValueConverter());
+//				}
+//
+//				if (valueClass.equals(Long.class)) {
+//					converters.put(i, new LongValueConverter());
+//				}
+//
+//				if (valueClass.equals(Float.class)) {
+//					converters.put(i, new FloatValueConverter());
+//				}
+//
+//				if (valueClass.equals(Double.class)) {
+//					converters.put(i, new DoubleValueConverter());
+//				}
+//
+//				if (valueClass.equals(String.class)) {
+//					converters.put(i, new StringValueConverter());
+//				}
+//
+//				if (!converters.containsKey(i)) {
+//					throw new IOException(
+//							"Unable to fill converter table. Supported values are Java primitive types and Strings!");
+//				}
+//
+//			}
+//			writersInitialized = true;
+//		}
 
 		// TODO: check that the maps have a mapping there?
 		for (int i = 0; i < t.size(); i++) {

@@ -29,15 +29,14 @@
 				<execution> <id>shade-services</id> <phase>package</phase> <goals> <goal>shade</goal> 
 				</goals> </execution> </executions> </plugin> -->
 		</plugins>
-	</build>
-        <repositories>
-                <repository>
-                            <id>cloudera</id>
-                                        <url>https://repository.cloudera.com/artifactory/cloudera-repos/</url>
-                                                </repository>
-                                                    </repositories>
+    </build>
 
-
+    <repositories>
+        <repository>
+            <id>cloudera</id>
+            <url>https://repository.cloudera.com/artifactory/cloudera-repos/</url>
+        </repository>
+    </repositories>
 
 	<dependencies>
 

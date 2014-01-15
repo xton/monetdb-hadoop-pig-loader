@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.io.Serializable;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Properties;
 
 import org.apache.commons.io.IOUtils;
 import org.apache.hadoop.fs.FSDataOutputStream;
@@ -24,6 +25,8 @@ import org.apache.pig.StoreFuncInterface;
 import org.apache.pig.data.DataType;
 import org.apache.pig.data.Tuple;
 import org.apache.pig.impl.util.ObjectSerializer;
+import org.apache.pig.impl.util.UDFContext;
+import org.apache.pig.impl.util.Utils;
 
 public class MonetDBStoreFunc implements StoreFuncInterface {
 
@@ -32,6 +35,7 @@ public class MonetDBStoreFunc implements StoreFuncInterface {
 		return LoadFunc.getAbsolutePath(location, curDir);
 	}
 
+    private String udfcSignature = null;
 	public static Logger log = Logger.getLogger(MonetDBStoreFunc.class);
 
 	private static final String SCHEMA_SER = ".schema.ser";
@@ -45,49 +49,100 @@ public class MonetDBStoreFunc implements StoreFuncInterface {
 
 	private MonetDBSQLSchema sqlSchema = new MonetDBSQLSchema();
 
+    // hat tip: http://chimera.labs.oreilly.com/books/1234000001811/ch11.html#store_func_frontend
+
 	public void setStoreLocation(String location, Job job) throws IOException {
 		Path p = new Path(location);
 		FileOutputFormat.setOutputPath(job, p);
-		FileSystem fs = p.getFileSystem(job.getConfiguration());
-
-		sqlSchema.setTableName(p.getName());
-
-		Path schemaPath = p.suffix("/" + SCHEMA_SQL);
-		if (!fs.exists(schemaPath)) {
-			FSDataOutputStream os = fs.create(schemaPath);
-			os.write(sqlSchema.toSQL().getBytes());
-			os.close();
-		}
-		log.info("Wrote SQL Schema to " + schemaPath);
-
-		Path schemaSerPath = p.suffix("/" + SCHEMA_SER);
-		if (!fs.exists(schemaSerPath)) {
-
-			Map<String, Serializable> schemaMetaData = new HashMap<String, Serializable>();
-			schemaMetaData.put("numCols", sqlSchema.getNumCols());
-			schemaMetaData.put("tableName", p.getName());
-
-			FSDataOutputStream os = fs.create(schemaSerPath);
-			os.write(serialize(schemaMetaData).getBytes());
-			os.close();
-		}
+//		FileSystem fs = p.getFileSystem(job.getConfiguration());
+//
+//		sqlSchema.setTableName(p.getName());
+//
+//		Path schemaPath = p.suffix("/" + SCHEMA_SQL);
+//		if (!fs.exists(schemaPath)) {
+//			FSDataOutputStream os = fs.create(schemaPath);
+//			os.write(sqlSchema.toSQL().getBytes());
+//			os.close();
+//		}
+//		log.info("Wrote SQL Schema to " + schemaPath);
+//
+//		Path schemaSerPath = p.suffix("/" + SCHEMA_SER);
+//		if (!fs.exists(schemaSerPath)) {
+//
+//			Map<String, Serializable> schemaMetaData = new HashMap<String, Serializable>();
+//			schemaMetaData.put("numCols", sqlSchema.getNumCols());
+//			schemaMetaData.put("tableName", p.getName());
+//
+//			FSDataOutputStream os = fs.create(schemaSerPath);
+//			os.write(serialize(schemaMetaData).getBytes());
+//			os.close();
+//		}
 
 	}
 
+    public void writeSchema(String location, Job job) throws IOException {
+        Properties props = getUdfProperties();
+        ResourceSchema s = new ResourceSchema(Utils.getSchemaFromString(props.getProperty("pig.monetdb.schema")));
+
+        // idempotentize
+        boolean addColumns = sqlSchema.getNumCols() == 0;
+
+        for (ResourceFieldSchema rfs : s.getFields()) {
+            if (!pigSqlTypeMap.containsKey(rfs.getType())) {
+                throw new IOException("Unsupported Column type: "
+                        + rfs.getName() + " (" + rfs.getType() + ") - Sorry!");
+            }
+            if (addColumns) {
+                sqlSchema.addColumn(rfs.getName(),
+                        pigSqlTypeMap.get(rfs.getType()));
+            }
+        }
+
+
+        Path p = new Path(location);
+        FileSystem fs = p.getFileSystem(job.getConfiguration());
+
+        sqlSchema.setTableName(p.getName());
+
+        Path schemaPath = p.suffix("/" + SCHEMA_SQL);
+        if (!fs.exists(schemaPath)) {
+            FSDataOutputStream os = fs.create(schemaPath);
+            os.write(sqlSchema.toSQL().getBytes());
+            os.close();
+        }
+        log.info("Wrote SQL Schema to " + schemaPath);
+
+        Path schemaSerPath = p.suffix("/" + SCHEMA_SER);
+        if (!fs.exists(schemaSerPath)) {
+
+            Map<String, Serializable> schemaMetaData = new HashMap<String, Serializable>();
+            schemaMetaData.put("numCols", sqlSchema.getNumCols());
+            schemaMetaData.put("tableName", p.getName());
+
+            FSDataOutputStream os = fs.create(schemaSerPath);
+            os.write(serialize(schemaMetaData).getBytes());
+            os.close();
+        }
+
+    }
+
+
 	public void checkSchema(ResourceSchema s) throws IOException {
+        Properties p = getUdfProperties();
+        p.setProperty("pig.monetdb.schema", s.toString());
 
-		boolean addColumns = sqlSchema.getNumCols() == 0;
-
-		for (ResourceFieldSchema rfs : s.getFields()) {
-			if (!pigSqlTypeMap.containsKey(rfs.getType())) {
-				throw new IOException("Unsupported Column type: "
-						+ rfs.getName() + " (" + rfs.getType() + ") - Sorry!");
-			}
-			if (addColumns) {
-				sqlSchema.addColumn(rfs.getName(),
-						pigSqlTypeMap.get(rfs.getType()));
-			}
-		}
+//		boolean addColumns = sqlSchema.getNumCols() == 0;
+//
+//		for (ResourceFieldSchema rfs : s.getFields()) {
+//			if (!pigSqlTypeMap.containsKey(rfs.getType())) {
+//				throw new IOException("Unsupported Column type: "
+//						+ rfs.getName() + " (" + rfs.getType() + ") - Sorry!");
+//			}
+//			if (addColumns) {
+//				sqlSchema.addColumn(rfs.getName(),
+//						pigSqlTypeMap.get(rfs.getType()));
+//			}
+//		}
 	}
 
 	@SuppressWarnings("rawtypes")
@@ -95,6 +150,9 @@ public class MonetDBStoreFunc implements StoreFuncInterface {
 
 	@SuppressWarnings({ "unchecked", "rawtypes" })
 	public void prepareToWrite(RecordWriter writer) throws IOException {
+        Properties props = getUdfProperties();
+        ResourceSchema s = new ResourceSchema(Utils.getSchemaFromString(props.getProperty("pig.monetdb.schema")));
+        ((MonetDBRecordWriter)writer).setPigSchema(s);
 		w = writer;
 	}
 
@@ -106,8 +164,15 @@ public class MonetDBStoreFunc implements StoreFuncInterface {
 		}
 	}
 
-	public void setStoreFuncUDFContextSignature(String signature) {
-	}
+    @Override
+    public void setStoreFuncUDFContextSignature(String signature) {
+        udfcSignature = signature;
+    }
+
+    public Properties getUdfProperties() {
+        UDFContext udfc = UDFContext.getUDFContext();
+        return udfc.getUDFProperties(this.getClass(), new String[]{udfcSignature});
+    }
 
 	public void cleanupOnFailure(String location, Job job) throws IOException {
 		Path p = new Path(location);
@@ -116,6 +181,7 @@ public class MonetDBStoreFunc implements StoreFuncInterface {
 	}
 
 	public void cleanupOnSuccess(String location, Job job) throws IOException {
+        writeSchema(location,job);
 
 		Path p = new Path(location);
 		FileSystem fs = p.getFileSystem(job.getConfiguration());
