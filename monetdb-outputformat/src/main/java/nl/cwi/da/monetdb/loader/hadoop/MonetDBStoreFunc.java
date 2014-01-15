@@ -18,17 +18,15 @@ import org.apache.hadoop.mapreduce.OutputFormat;
 import org.apache.hadoop.mapreduce.RecordWriter;
 import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
 import org.apache.log4j.Logger;
-import org.apache.pig.LoadFunc;
-import org.apache.pig.ResourceSchema;
+import org.apache.pig.*;
 import org.apache.pig.ResourceSchema.ResourceFieldSchema;
-import org.apache.pig.StoreFuncInterface;
 import org.apache.pig.data.DataType;
 import org.apache.pig.data.Tuple;
 import org.apache.pig.impl.util.ObjectSerializer;
 import org.apache.pig.impl.util.UDFContext;
 import org.apache.pig.impl.util.Utils;
 
-public class MonetDBStoreFunc implements StoreFuncInterface {
+public class MonetDBStoreFunc implements StoreFuncInterface, StoreMetadata {
 
 	public String relToAbsPathForStoreLocation(String location, Path curDir)
 			throws IOException {
@@ -38,9 +36,9 @@ public class MonetDBStoreFunc implements StoreFuncInterface {
     private String udfcSignature = null;
 	public static Logger log = Logger.getLogger(MonetDBStoreFunc.class);
 
-	private static final String SCHEMA_SER = ".schema.ser";
 	private static final String SCHEMA_SQL = "schema.sql";
 	private static final String LOADER_SQL = "load.sql";
+    private static final String SCHEMA_KEY = "pig.monetdb.schema";
 
 	@SuppressWarnings("rawtypes")
 	public OutputFormat getOutputFormat() throws IOException {
@@ -52,39 +50,13 @@ public class MonetDBStoreFunc implements StoreFuncInterface {
     // hat tip: http://chimera.labs.oreilly.com/books/1234000001811/ch11.html#store_func_frontend
 
 	public void setStoreLocation(String location, Job job) throws IOException {
-		Path p = new Path(location);
-		FileOutputFormat.setOutputPath(job, p);
-//		FileSystem fs = p.getFileSystem(job.getConfiguration());
-//
-//		sqlSchema.setTableName(p.getName());
-//
-//		Path schemaPath = p.suffix("/" + SCHEMA_SQL);
-//		if (!fs.exists(schemaPath)) {
-//			FSDataOutputStream os = fs.create(schemaPath);
-//			os.write(sqlSchema.toSQL().getBytes());
-//			os.close();
-//		}
-//		log.info("Wrote SQL Schema to " + schemaPath);
-//
-//		Path schemaSerPath = p.suffix("/" + SCHEMA_SER);
-//		if (!fs.exists(schemaSerPath)) {
-//
-//			Map<String, Serializable> schemaMetaData = new HashMap<String, Serializable>();
-//			schemaMetaData.put("numCols", sqlSchema.getNumCols());
-//			schemaMetaData.put("tableName", p.getName());
-//
-//			FSDataOutputStream os = fs.create(schemaSerPath);
-//			os.write(serialize(schemaMetaData).getBytes());
-//			os.close();
-//		}
-
+		FileOutputFormat.setOutputPath(job, new Path(location));
 	}
 
-    public void writeSchema(String location, Job job) throws IOException {
-        Properties props = getUdfProperties();
-        ResourceSchema s = new ResourceSchema(Utils.getSchemaFromString(props.getProperty("pig.monetdb.schema")));
+    @Override
+    public void storeSchema(ResourceSchema s, String location, Job job) throws IOException {
 
-        // idempotentize
+        // idempotentize.. probably not necessary
         boolean addColumns = sqlSchema.getNumCols() == 0;
 
         for (ResourceFieldSchema rfs : s.getFields()) {
@@ -98,11 +70,12 @@ public class MonetDBStoreFunc implements StoreFuncInterface {
             }
         }
 
-
         Path p = new Path(location);
         FileSystem fs = p.getFileSystem(job.getConfiguration());
 
-        sqlSchema.setTableName(p.getName());
+        String tableName = p.getName();
+        sqlSchema.setTableName(tableName);
+        int numCols = sqlSchema.getNumCols();
 
         Path schemaPath = p.suffix("/" + SCHEMA_SQL);
         if (!fs.exists(schemaPath)) {
@@ -112,37 +85,48 @@ public class MonetDBStoreFunc implements StoreFuncInterface {
         }
         log.info("Wrote SQL Schema to " + schemaPath);
 
-        Path schemaSerPath = p.suffix("/" + SCHEMA_SER);
-        if (!fs.exists(schemaSerPath)) {
+        FileStatus[] partDirs = fs.listStatus(p, new PathFilter() {
+            public boolean accept(Path arg0) {
+                return arg0.getName().startsWith(
+                        MonetDBRecordWriter.FOLDER_PREFIX);
+            }
+        });
 
-            Map<String, Serializable> schemaMetaData = new HashMap<String, Serializable>();
-            schemaMetaData.put("numCols", sqlSchema.getNumCols());
-            schemaMetaData.put("tableName", p.getName());
 
-            FSDataOutputStream os = fs.create(schemaSerPath);
-            os.write(serialize(schemaMetaData).getBytes());
-            os.close();
+        String loader = "";
+
+        for (FileStatus fis : partDirs) {
+            loader += "COPY BINARY INTO \"" + tableName + "\" FROM (\n";
+            Path cp = fis.getPath();
+            for (int colId = 0; colId < numCols; colId++) {
+                Path cpp = cp.suffix("/" + MonetDBRecordWriter.FILE_PREFIX
+                        + colId + MonetDBRecordWriter.FILE_SUFFIX);
+                if (!fs.exists(cpp)) {
+                    throw new IOException("Need path " + cpp
+                            + ", but is non-existent.");
+                }
+                String colpartName = cp.getName() + "/" + cpp.getName();
+                loader += "'$PATH/" + colpartName + "'";
+                if (colId < numCols - 1) {
+                    loader += ",\n";
+                }
+
+            }
+            loader += "\n);\n";
         }
 
+        Path loaderPath = p.suffix("/" + LOADER_SQL);
+        if (!fs.exists(loaderPath)) {
+            FSDataOutputStream os = fs.create(loaderPath);
+            os.write(loader.getBytes());
+            os.close();
+        }
+        log.info("Wrote SQL Loader to " + loaderPath);
     }
-
 
 	public void checkSchema(ResourceSchema s) throws IOException {
         Properties p = getUdfProperties();
-        p.setProperty("pig.monetdb.schema", s.toString());
-
-//		boolean addColumns = sqlSchema.getNumCols() == 0;
-//
-//		for (ResourceFieldSchema rfs : s.getFields()) {
-//			if (!pigSqlTypeMap.containsKey(rfs.getType())) {
-//				throw new IOException("Unsupported Column type: "
-//						+ rfs.getName() + " (" + rfs.getType() + ") - Sorry!");
-//			}
-//			if (addColumns) {
-//				sqlSchema.addColumn(rfs.getName(),
-//						pigSqlTypeMap.get(rfs.getType()));
-//			}
-//		}
+        p.setProperty(SCHEMA_KEY, s.toString());
 	}
 
 	@SuppressWarnings("rawtypes")
@@ -151,7 +135,7 @@ public class MonetDBStoreFunc implements StoreFuncInterface {
 	@SuppressWarnings({ "unchecked", "rawtypes" })
 	public void prepareToWrite(RecordWriter writer) throws IOException {
         Properties props = getUdfProperties();
-        ResourceSchema s = new ResourceSchema(Utils.getSchemaFromString(props.getProperty("pig.monetdb.schema")));
+        ResourceSchema s = new ResourceSchema(Utils.getSchemaFromString(props.getProperty(SCHEMA_KEY)));
         ((MonetDBRecordWriter)writer).setPigSchema(s);
 		w = writer;
 	}
@@ -181,56 +165,7 @@ public class MonetDBStoreFunc implements StoreFuncInterface {
 	}
 
 	public void cleanupOnSuccess(String location, Job job) throws IOException {
-        writeSchema(location,job);
-
-		Path p = new Path(location);
-		FileSystem fs = p.getFileSystem(job.getConfiguration());
-
-		FileStatus[] partDirs = fs.listStatus(p, new PathFilter() {
-			public boolean accept(Path arg0) {
-				return arg0.getName().startsWith(
-						MonetDBRecordWriter.FOLDER_PREFIX);
-			}
-		});
-
-		Path schemaSerPath = p.suffix("/" + SCHEMA_SER);
-		String schemaSerStr = IOUtils.toString(fs.open(schemaSerPath), "UTF-8");
-		@SuppressWarnings("unchecked")
-		Map<String, Object> schemaMetaData = (Map<String, Object>) deserialize(schemaSerStr);
-		int numCols = (Integer) schemaMetaData.get("numCols");
-		String tableName = (String) schemaMetaData.get("tableName");
-
-		String loader = "";
-
-		for (FileStatus fis : partDirs) {
-			loader += "COPY BINARY INTO \"" + tableName + "\" FROM (\n";
-			Path cp = fis.getPath();
-			for (int colId = 0; colId < numCols; colId++) {
-				Path cpp = cp.suffix("/" + MonetDBRecordWriter.FILE_PREFIX
-						+ colId + MonetDBRecordWriter.FILE_SUFFIX);
-				if (!fs.exists(cpp)) {
-					throw new IOException("Need path " + cpp
-							+ ", but is non-existent.");
-				}
-				String colpartName = cp.getName() + "/" + cpp.getName();
-				loader += "'$PATH/" + colpartName + "'";
-				if (colId < numCols - 1) {
-					loader += ",\n";
-				}
-
-			}
-			loader += "\n);\n";
-		}
-
-		Path loaderPath = p.suffix("/" + LOADER_SQL);
-		if (!fs.exists(loaderPath)) {
-			FSDataOutputStream os = fs.create(loaderPath);
-			os.write(loader.getBytes());
-			os.close();
-		}
-		log.info("Wrote SQL Loader to " + loaderPath);
-
-		fs.delete(p.suffix("/" + SCHEMA_SER), false);
+        // don't. work here is done by storeschema
 	}
 
 	public static String serialize(Object o) throws IOException {
@@ -251,5 +186,10 @@ public class MonetDBStoreFunc implements StoreFuncInterface {
 		pigSqlTypeMap.put(DataType.DOUBLE, "DOUBLE");
 		pigSqlTypeMap.put(DataType.CHARARRAY, "CLOB");
 	}
+
+    @Override
+    public void storeStatistics(ResourceStatistics stats, String location, Job job) throws IOException {
+        // don't
+    }
 
 }
