@@ -3,6 +3,7 @@ package nl.cwi.da.monetdb.loader.hadoop;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.text.NumberFormat;
 import java.util.HashMap;
 import java.util.Map;
@@ -48,15 +49,23 @@ public class MonetDBRecordWriter extends
 
     public void setPigSchema(ResourceSchema s){ pigSchema = s; }
 
-	private interface ValueConverter {
-		byte[] convert(Object value);
+	abstract static class ValueConverter {
+        abstract byte[] convert(Object value);
+
+        protected ByteBuffer newBuffer(int length) {
+            ByteBuffer b = ByteBuffer.allocate(length);
+            b.order(ByteOrder.LITTLE_ENDIAN);
+            return b;
+        }
 	}
 
-	private static class BooleanValueConverter implements ValueConverter {
-		private ByteBuffer bb = ByteBuffer.allocate(1);
+	private static class BooleanValueConverter extends ValueConverter {
+		private ByteBuffer bb = newBuffer(1);
 
 		public byte[] convert(Object value) {
 			bb.clear();
+            bb.order(ByteOrder.LITTLE_ENDIAN);
+
 			Boolean val = (Boolean) value;
 
 			if (val == null) {
@@ -74,8 +83,8 @@ public class MonetDBRecordWriter extends
 	}
 
 
-	private static class ByteValueConverter implements ValueConverter {
-		private ByteBuffer bb = ByteBuffer.allocate(1);
+	private static class ByteValueConverter extends ValueConverter {
+		private ByteBuffer bb = newBuffer(1);
 
 		public byte[] convert(Object value) {
 			bb.clear();
@@ -87,8 +96,8 @@ public class MonetDBRecordWriter extends
 		}
 	}
 
-	private static class ShortValueConverter implements ValueConverter {
-		private ByteBuffer bb = ByteBuffer.allocate(2);
+	private static class ShortValueConverter extends ValueConverter {
+		private ByteBuffer bb = newBuffer(2);
 
 		public byte[] convert(Object value) {
 			bb.clear();
@@ -100,8 +109,8 @@ public class MonetDBRecordWriter extends
 		}
 	}
 
-	private static class IntegerValueConverter implements ValueConverter {
-		private ByteBuffer bb = ByteBuffer.allocate(4);
+	private static class IntegerValueConverter extends ValueConverter {
+		private ByteBuffer bb = newBuffer(4);
 
 		public byte[] convert(Object value) {
 			bb.clear();
@@ -113,8 +122,8 @@ public class MonetDBRecordWriter extends
 		}
 	}
 
-	private static class LongValueConverter implements ValueConverter {
-		private ByteBuffer bb = ByteBuffer.allocate(8);
+	private static class LongValueConverter extends ValueConverter {
+		private ByteBuffer bb = newBuffer(8);
 
 		public byte[] convert(Object value) {
 			bb.clear();
@@ -126,8 +135,8 @@ public class MonetDBRecordWriter extends
 		}
 	}
 
-	private static class FloatValueConverter implements ValueConverter {
-		private ByteBuffer bb = ByteBuffer.allocate(4);
+	private static class FloatValueConverter extends ValueConverter {
+		private ByteBuffer bb = newBuffer(4);
 
 		public byte[] convert(Object value) {
 			bb.clear();
@@ -140,8 +149,8 @@ public class MonetDBRecordWriter extends
 		}
 	}
 
-	private static class DoubleValueConverter implements ValueConverter {
-		private ByteBuffer bb = ByteBuffer.allocate(8);
+	private static class DoubleValueConverter extends ValueConverter {
+		private ByteBuffer bb = newBuffer(8);
 
 		public byte[] convert(Object value) {
 			bb.clear();
@@ -153,7 +162,7 @@ public class MonetDBRecordWriter extends
 		}
 	}
 
-	private static class StringValueConverter implements ValueConverter {
+	private static class StringValueConverter extends ValueConverter {
 		public byte[] convert(Object value) {
 			return (((String) value) + "\n").getBytes();
 		}
@@ -201,71 +210,6 @@ public class MonetDBRecordWriter extends
 
 	public void write(WritableComparable key, Tuple t) throws IOException {
         initializeWriters();
-//		if (!writersInitialized) {
-//			for (int i = 0; i < t.size(); i++) {
-//
-//                Path path = new Path(FOLDER_PREFIX + String.format("%08d",context.getTaskAttemptID().getTaskID().getId()) + "/" + FILE_PREFIX + i + FILE_SUFFIX);
-//                Path workOutputPath = ((FileOutputCommitter)outputFormat.getOutputCommitter(context)).getWorkPath();
-//                Path outputFile = new Path(workOutputPath, path);
-//                FileSystem fs = outputFile.getFileSystem(context.getConfiguration());
-//
-////				Path outPath = FileOutputFormat.getOutputPath(context);
-////				FileSystem fs = outPath.getFileSystem(context
-////						.getConfiguration());
-////
-////				Path outputFile = outPath.suffix("/" + FOLDER_PREFIX
-////						+ context.getJobID().getId() + "/" + FILE_PREFIX + i
-////						+ FILE_SUFFIX);
-////
-////				if (fs.exists(outputFile)) {
-////					throw new IOException("Output file '" + outputFile
-////							+ "' already exists.");
-////				}
-//
-//				OutputStream os = fs.create(outputFile);
-//				writers.put(i, os);
-//
-//				Class valueClass = t.get(i).getClass();
-//				if (valueClass.equals(Boolean.class)) {
-//					converters.put(i, new BooleanValueConverter());
-//				}
-//
-//				if (valueClass.equals(Byte.class)) {
-//					converters.put(i, new ByteValueConverter());
-//				}
-//
-//				if (valueClass.equals(Short.class)) {
-//					converters.put(i, new ShortValueConverter());
-//				}
-//
-//				if (valueClass.equals(Integer.class)) {
-//					converters.put(i, new IntegerValueConverter());
-//				}
-//
-//				if (valueClass.equals(Long.class)) {
-//					converters.put(i, new LongValueConverter());
-//				}
-//
-//				if (valueClass.equals(Float.class)) {
-//					converters.put(i, new FloatValueConverter());
-//				}
-//
-//				if (valueClass.equals(Double.class)) {
-//					converters.put(i, new DoubleValueConverter());
-//				}
-//
-//				if (valueClass.equals(String.class)) {
-//					converters.put(i, new StringValueConverter());
-//				}
-//
-//				if (!converters.containsKey(i)) {
-//					throw new IOException(
-//							"Unable to fill converter table. Supported values are Java primitive types and Strings!");
-//				}
-//
-//			}
-//			writersInitialized = true;
-//		}
 
 		// TODO: check that the maps have a mapping there?
 		for (int i = 0; i < t.size(); i++) {
