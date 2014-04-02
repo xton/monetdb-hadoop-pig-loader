@@ -1,18 +1,9 @@
 package nl.cwi.da.monetdb.loader.hadoop;
 
-import java.io.IOException;
-import java.io.Serializable;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.Properties;
-
-import org.apache.commons.io.IOUtils;
-import org.apache.hadoop.fs.FSDataOutputStream;
-import org.apache.hadoop.fs.FileStatus;
-import org.apache.hadoop.fs.FileSystem;
-import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.fs.PathFilter;
+import org.apache.hadoop.fs.*;
 import org.apache.hadoop.io.WritableComparable;
+import org.apache.hadoop.mapred.Counters;
+import org.apache.hadoop.mapreduce.Counter;
 import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.OutputFormat;
 import org.apache.hadoop.mapreduce.RecordWriter;
@@ -25,6 +16,14 @@ import org.apache.pig.data.Tuple;
 import org.apache.pig.impl.util.ObjectSerializer;
 import org.apache.pig.impl.util.UDFContext;
 import org.apache.pig.impl.util.Utils;
+import org.apache.pig.tools.counters.PigCounterHelper;
+import org.apache.pig.tools.pigstats.PigStatusReporter;
+
+import java.io.IOException;
+import java.io.Serializable;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Properties;
 
 public class MonetDBStoreFunc implements StoreFuncInterface, StoreMetadata {
 
@@ -58,6 +57,10 @@ public class MonetDBStoreFunc implements StoreFuncInterface, StoreMetadata {
 
         // idempotentize.. probably not necessary
         boolean addColumns = sqlSchema.getNumCols() == 0;
+        PigStatusReporter sr = PigStatusReporter.getInstance();
+        PigCounterHelper ch = new PigCounterHelper();
+
+        if (sr != null) sr.setStatus("Writing SQL schema");
 
         for (ResourceFieldSchema rfs : s.getFields()) {
             if (!pigSqlTypeMap.containsKey(rfs.getType())) {
@@ -91,13 +94,15 @@ public class MonetDBStoreFunc implements StoreFuncInterface, StoreMetadata {
                         MonetDBRecordWriter.FOLDER_PREFIX);
             }
         });
-
-
-        String loader = "";
+        StringBuilder sb = new StringBuilder(2048);
 
         for (FileStatus fis : partDirs) {
-            loader += "COPY BINARY INTO \"" + tableName + "\" FROM (\n";
+            sb.append("COPY BINARY INTO \"").append(tableName).append("\" FROM (\n");
             Path cp = fis.getPath();
+
+            if(sr != null) sr.setStatus("Writing load for slice: " + cp);
+            ch.incrCounter(getClass().getName(),"slices written",1);
+
             for (int colId = 0; colId < numCols; colId++) {
                 Path cpp = cp.suffix("/" + MonetDBRecordWriter.FILE_PREFIX
                         + colId + MonetDBRecordWriter.FILE_SUFFIX);
@@ -106,21 +111,22 @@ public class MonetDBStoreFunc implements StoreFuncInterface, StoreMetadata {
                             + ", but is non-existent.");
                 }
                 String colpartName = cp.getName() + "/" + cpp.getName();
-                loader += "'$PATH/" + colpartName + "'";
+                sb.append("'$PATH/").append(colpartName).append("'");
                 if (colId < numCols - 1) {
-                    loader += ",\n";
+                    sb.append(",\n");
                 }
 
             }
-            loader += "\n);\n";
+            sb.append("\n);\n");
         }
 
         Path loaderPath = p.suffix("/" + LOADER_SQL);
         if (!fs.exists(loaderPath)) {
             FSDataOutputStream os = fs.create(loaderPath);
-            os.write(loader.getBytes());
+            os.write(sb.toString().getBytes());
             os.close();
         }
+
         log.info("Wrote SQL Loader to " + loaderPath);
     }
 

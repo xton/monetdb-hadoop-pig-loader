@@ -171,6 +171,8 @@ public class MonetDBRecordWriter extends
     public void initializeWriters() throws IOException {
         if (!writersInitialized) {
             int i = 0;
+//            int buffSize = context.getConfiguration().getInt("io.file.buffer.size", 4096);
+            int buffSize = 65536; // http://blog.cloudera.com/blog/2009/03/configuration-parameters-what-can-you-just-ignore/
             for(ResourceSchema.ResourceFieldSchema s : pigSchema.getFields()){
 
                 // One file per column
@@ -179,7 +181,14 @@ public class MonetDBRecordWriter extends
                 Path outputFile = new Path(workOutputPath, path);
 
                 FileSystem fs = outputFile.getFileSystem(context.getConfiguration());
-                OutputStream os = fs.create(outputFile);
+
+                // We force the blocksize and replication smaller than normal here. These files are
+                // ephemeral and generally small and we don't want to overload the cluster by keeping
+                // a zillion of them open at once. Each open file reserves an entire block's worth of
+                // space until closed.
+//                long blockSize = (s.getType() == DataType.CHARARRAY ? 32 : 8);
+                long blockSize = 32;
+                OutputStream os = fs.create(outputFile, true, buffSize, (short) 2, blockSize * 1024 * 1024);
                 writers.put(i, os);
 
                 if(s.getType() == DataType.BOOLEAN) {
